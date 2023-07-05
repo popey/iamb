@@ -11,7 +11,7 @@ license = "Apache-2.0"
 exclude = [".github", "CONTRIBUTING.md"]
 keywords = ["matrix", "chat", "tui", "vim"]
 categories = ["command-line-utilities"]
-rust-version = "1.67"
+rust-version = "1.70"
 build = "build.rs"
 
 [build-dependencies]
@@ -60,9 +60,9 @@ git = "https://github.com/ulyssa/modalkit"
 rev = "f9f0517ed6a6152c1eab36d2e71b11f38831d5e6"
 
 [dependencies.matrix-sdk]
-version = "^0.6.2"
+version = "0.7.1"
 default-features = false
-features = ["e2e-encryption", "sled", "rustls-tls", "sso-login"]
+features = ["e2e-encryption", "rustls-tls", "sqlite", "sso-login"]
 
 [dependencies.tokio]
 version = "1.24.1"

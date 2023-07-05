@@ -19,7 +19,7 @@ use std::collections::VecDeque;
 use std::convert::TryFrom;
 use std::fmt::Display;
 use std::fs::{create_dir_all, File};
-use std::io::{stdout, BufReader, BufWriter, Stdout};
+use std::io::{stdout, BufWriter, Stdout};
 use std::ops::DerefMut;
 use std::process;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -566,7 +566,7 @@ impl Application {
         match action {
             HomeserverAction::CreateRoom(alias, vis, flags) => {
                 let client = &store.application.worker.client;
-                let room_id = create_room(client, alias.as_deref(), vis, flags).await?;
+                let room_id = create_room(client, alias, vis, flags).await?;
                 let room = IambId::Room(room_id);
                 let target = OpenTarget::Application(room);
                 let action = WindowAction::Switch(target);
@@ -671,11 +671,8 @@ async fn login(worker: Requester, settings: &ApplicationSettings) -> IambResult<
     println!("Logging in for {}...", settings.profile.user_id);
 
     if settings.session_json.is_file() {
-        let file = File::open(settings.session_json.as_path())?;
-        let reader = BufReader::new(file);
-        let session = serde_json::from_reader(reader).map_err(IambError::from)?;
-
-        worker.login(LoginStyle::SessionRestore(session))?;
+        let session = settings.read_session()?;
+        worker.login(LoginStyle::SessionRestore(session.into()))?;
 
         return Ok(());
     }

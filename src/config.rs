@@ -5,14 +5,15 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::BufReader;
+use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::Parser;
-use matrix_sdk::ruma::{OwnedRoomAliasId, OwnedRoomId, OwnedUserId, UserId};
+use matrix_sdk::matrix_auth::MatrixSession;
+use matrix_sdk::ruma::{OwnedDeviceId, OwnedRoomAliasId, OwnedRoomId, OwnedUserId, UserId};
 use ratatui_image::picker::ProtocolType;
-use serde::{de::Error as SerdeError, de::Visitor, Deserialize, Deserializer};
+use serde::{de::Error as SerdeError, de::Visitor, Deserialize, Deserializer, Serialize};
 use tracing::Level;
 use url::Url;
 
@@ -21,7 +22,15 @@ use modalkit::tui::{
     text::Span,
 };
 
-use super::base::{IambId, RoomInfo, SortColumn, SortFieldRoom, SortFieldUser, SortOrder};
+use super::base::{
+    IambError,
+    IambId,
+    RoomInfo,
+    SortColumn,
+    SortFieldRoom,
+    SortFieldUser,
+    SortOrder,
+};
 
 macro_rules! usage {
     ( $($args: tt)* ) => {
@@ -214,6 +223,40 @@ impl<'de> Deserialize<'de> for UserColor {
         D: Deserializer<'de>,
     {
         deserializer.deserialize_str(UserColorVisitor)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Session {
+    access_token: String,
+    refresh_token: Option<String>,
+    user_id: OwnedUserId,
+    device_id: OwnedDeviceId,
+}
+
+impl From<Session> for MatrixSession {
+    fn from(session: Session) -> Self {
+        MatrixSession {
+            tokens: matrix_sdk::matrix_auth::MatrixSessionTokens {
+                access_token: session.access_token,
+                refresh_token: session.refresh_token,
+            },
+            meta: matrix_sdk::SessionMeta {
+                user_id: session.user_id,
+                device_id: session.device_id,
+            },
+        }
+    }
+}
+
+impl From<MatrixSession> for Session {
+    fn from(session: MatrixSession) -> Self {
+        Session {
+            access_token: session.tokens.access_token,
+            refresh_token: session.tokens.refresh_token,
+            user_id: session.meta.user_id,
+            device_id: session.meta.device_id,
+        }
     }
 }
 
@@ -415,6 +458,7 @@ impl Tunables {
 #[derive(Clone)]
 pub struct DirectoryValues {
     pub cache: PathBuf,
+    pub data: PathBuf,
     pub logs: PathBuf,
     pub downloads: Option<PathBuf>,
     pub image_previews: PathBuf,
@@ -423,6 +467,7 @@ pub struct DirectoryValues {
 #[derive(Clone, Default, Deserialize)]
 pub struct Directories {
     pub cache: Option<PathBuf>,
+    pub data: Option<PathBuf>,
     pub logs: Option<PathBuf>,
     pub downloads: Option<PathBuf>,
     pub image_previews: Option<PathBuf>,
@@ -432,6 +477,7 @@ impl Directories {
     fn merge(self, other: Self) -> Self {
         Directories {
             cache: self.cache.or(other.cache),
+            data: self.data.or(other.data),
             logs: self.logs.or(other.logs),
             downloads: self.downloads.or(other.downloads),
             image_previews: self.image_previews.or(other.image_previews),
@@ -448,6 +494,15 @@ impl Directories {
             })
             .expect("no dirs.cache value configured!");
 
+        let data = self
+            .data
+            .or_else(|| {
+                let mut dir = dirs::data_dir()?;
+                dir.push("iamb");
+                dir.into()
+            })
+            .expect("no dirs.data value configured!");
+
         let logs = self.logs.unwrap_or_else(|| {
             let mut dir = cache.clone();
             dir.push("logs");
@@ -462,7 +517,7 @@ impl Directories {
             dir
         });
 
-        DirectoryValues { cache, logs, downloads, image_previews }
+        DirectoryValues { cache, data, logs, downloads, image_previews }
     }
 }
 
@@ -537,6 +592,7 @@ pub struct ApplicationSettings {
     pub matrix_dir: PathBuf,
     pub layout_json: PathBuf,
     pub session_json: PathBuf,
+    pub sqlite_dir: PathBuf,
     pub profile_name: String,
     pub profile: ProfileConfig,
     pub tunables: TunableValues,
@@ -601,8 +657,15 @@ impl ApplicationSettings {
         profile_dir.push("profiles");
         profile_dir.push(profile_name.as_str());
 
+        let mut profile_data_dir = dirs.data.clone();
+        profile_data_dir.push("profiles");
+        profile_data_dir.push(profile_name.as_str());
+
         let mut matrix_dir = profile_dir.clone();
         matrix_dir.push("matrix");
+
+        let mut sqlite_dir = profile_data_dir.clone();
+        sqlite_dir.push("sqlite");
 
         let mut session_json = profile_dir;
         session_json.push("session.json");
@@ -619,6 +682,7 @@ impl ApplicationSettings {
             matrix_dir,
             layout_json,
             session_json,
+            sqlite_dir,
             profile_name,
             profile,
             tunables,
@@ -627,6 +691,21 @@ impl ApplicationSettings {
         };
 
         Ok(settings)
+    }
+
+    pub fn read_session(&self) -> Result<Session, IambError> {
+        let file = File::open(self.session_json.as_path())?;
+        let reader = BufReader::new(file);
+        let session = serde_json::from_reader(reader).map_err(IambError::from)?;
+        Ok(session)
+    }
+
+    pub fn write_session(&self, session: MatrixSession) -> Result<(), IambError> {
+        let file = File::create(self.session_json.as_path())?;
+        let writer = BufWriter::new(file);
+        let session = Session::from(session);
+        serde_json::to_writer(writer, &session).map_err(IambError::from)?;
+        Ok(())
     }
 
     pub fn get_user_char_span<'a>(&self, user_id: &'a UserId) -> Span<'a> {
